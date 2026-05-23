@@ -1,2 +1,0 @@
-# elros
-virtual assistant app
