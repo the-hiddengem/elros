@@ -317,8 +317,11 @@ const CATS = [
   {id:'Other',           icon:'📦',color:'#8fa8c8'},
   {id:'Salary',          icon:'💰',color:'#1ccb8f'},
   {id:'Extra Income',    icon:'💵',color:'#52b788'},
+  {id:'Investment',      icon:'📈',color:'#4d9fff'},
+  {id:'Gifts Received',  icon:'🎀',color:'#ff9ef5'},
 ];
-const INC_CATS = new Set(['Salary','Extra Income']);
+
+const INC_CATS = new Set(['Salary','Extra Income','Investment','Gifts Received']);
 const CMAP = Object.fromEntries(CATS.map(c=>[c.id,c]));
 const getCat = id => CMAP[id] || {id,icon:'📦',color:'#8fa8c8'};
 
@@ -565,9 +568,29 @@ function renderHi(txns) {
 function renderAn(txns, totExp) {
   const cats  = catTotals(txns);
   const trend = trendData();
-  let h = `<div class="card cwrap" style="animation:fu .3s ease"><div class="ctitle">Daily spending — ${MONTHS[VM.getMonth()]}</div>
+  const monthly = getMonthlyData(6);
+  const curMonthLabel = MONTHS[VM.getMonth()];
+
+  let h = `
+  <!-- AI Commentary card -->
+  <div class="card cpad" style="animation:fu .3s ease;border-color:var(--border-teal)">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+      <div style="width:28px;height:28px;border-radius:8px;background:var(--teal-glow);border:0.5px solid var(--border-teal);display:flex;align-items:center;justify-content:center;font-size:14px">✨</div>
+      <div class="slabel" style="margin:0">Insights — ${curMonthLabel}</div>
+    </div>
+    <div id="ai-commentary" style="font-size:13px;color:var(--text2);line-height:1.7">
+      <div style="color:var(--text3);font-size:12px;display:flex;align-items:center;gap:6px">
+        <div style="width:6px;height:6px;border-radius:50%;background:var(--amber);animation:pulse 1s infinite"></div>
+        Analysing your spending…
+      </div>
+    </div>
+  </div>
+
+  <div class="card cwrap"><div class="ctitle">Daily spending — ${curMonthLabel}</div>
     <div style="height:140px;position:relative"><canvas id="ac"></canvas></div></div>
+
   <div class="card cpad"><div class="slabel">Full breakdown</div>`;
+
   cats.forEach(c=>{
     const pct = totExp>0?(c.total/totExp*100):0;
     h += `<div class="crow">
@@ -579,8 +602,107 @@ function renderAn(txns, totExp) {
     </div>`;
   });
   h += `</div>`;
+
   document.getElementById('an').innerHTML = h;
   drawLineChart('ac', trend, 140, true);
+
+  // Generate AI commentary after render
+  generateInsights(txns, totExp, cats, monthly);
+}
+
+async function generateInsights(txns, totExp, cats, monthly) {
+  const el = document.getElementById('ai-commentary');
+  if (!el) return;
+
+  // Build context for Claude
+  const curMonth = MONTHS[VM.getMonth()] + ' ' + VM.getFullYear();
+  const income   = txns.filter(t=>t.type==='income').reduce((s,t)=>s+abs(t.amount),0);
+  const balance  = income - totExp;
+
+  // Historical averages from last 5 months (excluding current)
+  const hist = monthly.slice(0, monthly.length-1);
+  const avgExp = hist.length ? hist.reduce((s,m)=>s+m.expense,0)/hist.length : 0;
+  const avgInc = hist.length ? hist.reduce((s,m)=>s+m.income,0)/hist.length : 0;
+
+  // Top 3 categories this month
+  const topCats = cats.slice(0,3).map(c=>`${c.id}: RM${c.total.toFixed(0)}`).join(', ');
+
+  // Notable transactions (top 3 by amount)
+  const notable = txns
+    .filter(t=>t.type==='expense')
+    .sort((a,b)=>abs(b.amount)-abs(a.amount))
+    .slice(0,5)
+    .map(t=>`${t.note||t.category} (RM${abs(t.amount).toFixed(0)})`)
+    .join(', ');
+
+  const prompt = `You are a personal finance assistant. Analyse this month's spending and give 3-4 concise bullet point insights. Be specific, use the actual numbers, and be conversational but sharp.
+
+Month: ${curMonth}
+Total income: RM${income.toFixed(0)}
+Total expenses: RM${totExp.toFixed(0)}  
+Net balance: RM${balance.toFixed(0)}
+Top categories: ${topCats}
+Notable transactions: ${notable}
+Historical avg monthly expenses (last ${hist.length} months): RM${avgExp.toFixed(0)}
+Historical avg monthly income: RM${avgInc.toFixed(0)}
+
+Monthly trend data: ${monthly.map(m=>`${m.label}: income RM${m.income.toFixed(0)}, expenses RM${m.expense.toFixed(0)}`).join(' | ')}
+
+Write 3-4 bullet points (use • character). Each should be 1-2 sentences. Cover: how this month compares to average, biggest spending categories, any notable patterns or outliers, and one forward-looking observation. Keep it under 120 words total. Do not use markdown bold or headers.`;
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 300,
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+    const data = await res.json();
+    const text = data.content?.[0]?.text || '';
+    if (text) {
+      el.innerHTML = text
+        .split('\n')
+        .filter(l=>l.trim())
+        .map(l=>`<div style="margin-bottom:8px">${l.trim()}</div>`)
+        .join('');
+    } else {
+      el.innerHTML = generateLocalInsights(totExp, income, avgExp, avgInc, cats, monthly);
+    }
+  } catch {
+    // Fallback: generate insights locally without API
+    el.innerHTML = generateLocalInsights(totExp, income, avgExp, avgInc, cats, monthly);
+  }
+}
+
+function generateLocalInsights(totExp, income, avgExp, avgInc, cats, monthly) {
+  const insights = [];
+  const bal = income - totExp;
+
+  // Spending vs average
+  if (avgExp > 0) {
+    const diff = totExp - avgExp;
+    const pct  = Math.abs(diff/avgExp*100).toFixed(0);
+    if (diff > 0) insights.push(`• Spending is up ${pct}% vs your ${monthly.length-1}-month average (RM${avgExp.toFixed(0)}). You spent RM${diff.toFixed(0)} more than usual.`);
+    else insights.push(`• Good month — spending is down ${pct}% vs your average (RM${avgExp.toFixed(0)}). You saved RM${Math.abs(diff).toFixed(0)} compared to usual.`);
+  }
+
+  // Top category
+  if (cats[0]) insights.push(`• ${cats[0].id} is your biggest expense at RM${cats[0].total.toFixed(0)} (${totExp>0?(cats[0].total/totExp*100).toFixed(0):0}% of total spending).`);
+
+  // Balance
+  if (bal >= 0) insights.push(`• Net positive month — you kept RM${bal.toFixed(0)} after all expenses.`);
+  else insights.push(`• Expenses exceeded income by RM${Math.abs(bal).toFixed(0)} this month.`);
+
+  // Income vs average
+  if (avgInc > 0 && income > 0) {
+    const diff = income - avgInc;
+    if (Math.abs(diff) > 500) insights.push(`• Income was ${diff>0?'up':'down'} RM${Math.abs(diff).toFixed(0)} vs your average of RM${avgInc.toFixed(0)}.`);
+  }
+
+  return insights.map(i=>`<div style="margin-bottom:8px">${i}</div>`).join('');
 }
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
